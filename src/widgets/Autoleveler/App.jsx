@@ -1,9 +1,7 @@
-import React, { PureComponent } from 'react';
-import PropTypes from 'prop-types';
-import controller from '../../lib/controller';
 import cx from 'classnames';
-import log from '../../lib/log';
 import pubsub from 'pubsub-js';
+import PropTypes from 'prop-types';
+import React, { PureComponent } from 'react';
 import {
     // Units
     IMPERIAL_UNITS,
@@ -11,6 +9,8 @@ import {
     // Controllers
     GRBL
 } from '../../constants';
+import controller from '../../lib/controller';
+import log from '../../lib/log';
 
 class App extends PureComponent {
     static propTypes = {
@@ -19,6 +19,25 @@ class App extends PureComponent {
     };
 
     state = this.getInitialState();
+
+    actions = {
+        onChangeMargin: (event) => {
+            this.setState({ margin: event.value });
+        },
+
+        onChangeZSafe: (event) => {
+            this.setState({ zSafe: event.value });
+        },
+
+        onChangeDelta: (event) => {
+            this.setState({ delta: event.value });
+        },
+
+        onChangeFeedrate: (event) => {
+            this.setState({ feedrate: event.value });
+        }
+    }
+
     controllerEvent = {
         'gcode:unload': () => {
             this.setState({ gcodeLoaded: false });
@@ -86,6 +105,8 @@ class App extends PureComponent {
 
     pubsubEvent = {
         'gcode:bbox': (msg, bbox) => {
+            console.error(msg, bbox);
+
             // Got from https://github.com/cncjs/cncjs/blob/master/src/app/widgets/GCode/index.jsx
             const dX = bbox.max.x - bbox.min.x;
             const dY = bbox.max.y - bbox.min.y;
@@ -121,8 +142,8 @@ class App extends PureComponent {
     }
 
     componentWillUnmount() {
-        this.unsubscribe();
         this.removeControllerEvents();
+        this.unsubscribe();
     }
 
     addControllerEvents() {
@@ -144,7 +165,7 @@ class App extends PureComponent {
             const callback = this.pubsubEvent[eventName];
             const token = pubsub.subscribe(eventName, callback);
             this.pubsubTokens.push(token);
-        })
+        });
     }
 
     unsubscribe() {
@@ -195,25 +216,73 @@ class App extends PureComponent {
             },
             isAutolevelRunning: false,
             delta: 10.0,
-            height: 3.0,
-            feed: 25,
+            zSafe: 3.0,
+            feedrate: 25,
             margin: 2.5,
             gcodeLoaded: false
         };
     }
 
     render() {
-        const { isAutolevelRunning } = this.state;
+        const {
+            isAutolevelRunning,
+            margin,
+            zSafe,
+            delta,
+            feedrate
+        } = this.state;
 
         return (
             <div className="form-group">
+                <div className="input-group input-group-sm">
+                    <label className="control-label">Margins</label>
+                    <input
+                        type="number"
+                        className="form-control"
+                        step="0.5"
+                        min="0"
+                        defaultValue={margin}
+                        disabled={isAutolevelRunning}
+                        onChange={this.actions.onChangeMargin}
+                    />
+                    <label className="control-label">Z Safe</label>
+                    <input
+                        type="number"
+                        className="form-control"
+                        step="0.5"
+                        min="0.5"
+                        defaultValue={zSafe}
+                        disabled={isAutolevelRunning}
+                        onChange={this.actions.onChangeZSafe}
+                    />
+                    <label className="control-label">Delta</label>
+                    <input
+                        type="number"
+                        className="form-control"
+                        step="1"
+                        min="1"
+                        defaultValue={delta}
+                        disabled={isAutolevelRunning}
+                        onChange={this.actions.onChangeDelta}
+                    />
+                    <label className="control-label">Feedrate</label>
+                    <input
+                        type="number"
+                        className="form-control"
+                        step="10"
+                        min="1"
+                        defaultValue={feedrate}
+                        disabled={isAutolevelRunning}
+                        onChange={this.actions.onChangeFeedrate}
+                    />
+                </div>
                 <div className="input-group input-group-sm">
                     <div className="input-group-btn">
                         <button
                             type="button"
                             className={cx(
-                                "btn",
-                                "btn-primary"
+                                'btn',
+                                'btn-primary'
                             )}
                             disabled={isAutolevelRunning}
                             onClick={() => {
@@ -228,19 +297,20 @@ class App extends PureComponent {
 
     startAutolevel() {
         // Code got from https://github.com/kreso-t/cncjs-kt-ext
-        log.info('Starting autoleveling')
+        log.info('Starting autoleveling');
+        this.setState({ isAutolevelRunning: true });
 
         let workCoordinates = {
             x: this.state.machinePosition.x - this.state.workPosition.x,
             y: this.state.machinePosition.y - this.state.workPosition.y,
             z: this.state.machinePosition.z - this.state.workPosition.z
         };
-        let probedPoints = [];
-        let pointCount = 0;
+        // let probedPoints = [];
+        // let pointCount = 0;
 
         log.info(`Work Coordinates: ${JSON.stringify(workCoordinates)}`);
 
-        let code = []
+        let code = [];
         let xmin = this.state.bbox.xmin + this.state.margin;
         let xmax = this.state.bbox.xmax - this.state.margin;
         let ymin = this.state.bbox.ymin + this.state.margin;
@@ -251,12 +321,12 @@ class App extends PureComponent {
         code.push('(AL: probing initial point)');
         code.push('G21');
         code.push('G90');
-        code.push(`G0 Z${this.state.height}`);
-        code.push(`G0 X${xmin.toFixed(3)} Y${ymin.toFixed(3)} Z${this.state.height}`);
-        code.push(`G38.2 Z-${this.state.height + 1} F${this.state.feed / 2}`);
+        code.push(`G0 Z${this.state.zSafe}`);
+        code.push(`G0 X${xmin.toFixed(3)} Y${ymin.toFixed(3)} Z${this.state.zSafe}`);
+        code.push(`G38.2 Z-${this.state.zSafe + 1} F${this.state.feedrate / 2}`);
         code.push('G10 L20 P1 Z0'); // set the z zero
-        code.push(`G0 Z${this.state.height}`);
-        this.planedPointCount++;
+        code.push(`G0 Z${this.state.zSafe}`);
+        // this.planedPointCount++;
 
         let y = ymin - dy;
 
@@ -277,15 +347,17 @@ class App extends PureComponent {
                 if (x > xmax) {
                     x = xmax;
                 }
-                code.push(`(AL: probing point ${planedPointCount + 1})`);
-                code.push(`G90 G0 X${x.toFixed(3)} Y${y.toFixed(3)} Z${this.state.height}`);
-                code.push(`G38.2 Z-${this.state.height + 1} F${this.state.feed}`);
-                code.push(`G0 Z${this.state.height}`);
-                planedPointCount++;
+                // code.push(`(AL: probing point ${planedPointCount + 1})`);
+                code.push(`G90 G0 X${x.toFixed(3)} Y${y.toFixed(3)} Z${this.state.zSafe}`);
+                code.push(`G38.2 Z-${this.state.zSafe + 1} F${this.state.feedrate}`);
+                code.push(`G0 Z${this.state.zSafe}`);
+                // planedPointCount++;
             }
         }
 
         log.info(`Sending GCode:\n${code.join('\n')}\n`);
+
+        this.setState({ isAutolevelRunning: false });
     }
 }
 
