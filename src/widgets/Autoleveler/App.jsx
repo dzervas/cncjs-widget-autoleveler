@@ -1,6 +1,9 @@
 import React, { PureComponent } from 'react';
 import PropTypes from 'prop-types';
 import controller from '../../lib/controller';
+import cx from 'classnames';
+import log from '../../lib/log';
+import pubsub from 'pubsub-js';
 import {
     // Units
     IMPERIAL_UNITS,
@@ -17,6 +20,9 @@ class App extends PureComponent {
 
     state = this.getInitialState();
     controllerEvent = {
+        'gcode:unload': () => {
+            this.setState({ gcodeLoaded: false });
+        },
         'serialport:open': (options) => {
             const { port } = options;
             this.setState({ port: port });
@@ -78,24 +84,76 @@ class App extends PureComponent {
         }
     };
 
+    pubsubEvent = {
+        'gcode:bbox': (msg, bbox) => {
+            // Got from https://github.com/cncjs/cncjs/blob/master/src/app/widgets/GCode/index.jsx
+            const dX = bbox.max.x - bbox.min.x;
+            const dY = bbox.max.y - bbox.min.y;
+            const dZ = bbox.max.z - bbox.min.z;
+
+            this.setState({
+                bbox: {
+                    min: {
+                        x: bbox.min.x,
+                        y: bbox.min.y,
+                        z: bbox.min.z
+                    },
+                    max: {
+                        x: bbox.max.x,
+                        y: bbox.max.y,
+                        z: bbox.max.z
+                    },
+                    delta: {
+                        x: dX,
+                        y: dY,
+                        z: dZ
+                    }
+                }
+            });
+        }
+    };
+
+    pubsubTokens = [];
+
     componentDidMount() {
+        this.subscribe();
         this.addControllerEvents();
     }
+
     componentWillUnmount() {
+        this.unsubscribe();
         this.removeControllerEvents();
     }
+
     addControllerEvents() {
         Object.keys(this.controllerEvent).forEach(eventName => {
             const callback = this.controllerEvent[eventName];
             controller.addListener(eventName, callback);
         });
     }
+
     removeControllerEvents() {
         Object.keys(this.controllerEvent).forEach(eventName => {
             const callback = this.controllerEvent[eventName];
             controller.removeListener(eventName, callback);
         });
     }
+
+    subscribe() {
+        Object.keys(this.pubsubEvent).forEach(eventName => {
+            const callback = this.pubsubEvent[eventName];
+            const token = pubsub.subscribe(eventName, callback);
+            this.pubsubTokens.push(token);
+        })
+    }
+
+    unsubscribe() {
+        this.pubsubTokens.forEach((token) => {
+            pubsub.unsubscribe(token);
+        });
+        this.pubsubTokens = [];
+    }
+
     getInitialState() {
         return {
             port: controller.port,
@@ -108,9 +166,42 @@ class App extends PureComponent {
                 state: controller.workflow.state,
                 context: controller.workflow.context
             },
-            isAutolevelRunning: false
+            machinePosition: {
+                x: 0.000,
+                y: 0.000,
+                z: 0.000
+            },
+            workPosition: {
+                x: 0.000,
+                y: 0.000,
+                z: 0.000
+            },
+            bbox: {
+                min: {
+                    x: 0,
+                    y: 0,
+                    z: 0
+                },
+                max: {
+                    x: 0,
+                    y: 0,
+                    z: 0
+                },
+                delta: {
+                    x: 0,
+                    y: 0,
+                    z: 0
+                }
+            },
+            isAutolevelRunning: false,
+            delta: 10.0,
+            height: 3.0,
+            feed: 25,
+            margin: 2.5,
+            gcodeLoaded: false
         };
     }
+
     render() {
         const { isAutolevelRunning } = this.state;
 
@@ -120,16 +211,81 @@ class App extends PureComponent {
                     <div className="input-group-btn">
                         <button
                             type="button"
-                            className="btn"
+                            className={cx(
+                                "btn",
+                                "btn-primary"
+                            )}
                             disabled={isAutolevelRunning}
                             onClick={() => {
-                                // actions.runAutoleveler(GRBL);
+                                this.startAutolevel();
                             }}
                         >Run Autolevel</button>
                     </div>
                 </div>
             </div>
         );
+    }
+
+    startAutolevel() {
+        // Code got from https://github.com/kreso-t/cncjs-kt-ext
+        log.info('Starting autoleveling')
+
+        let workCoordinates = {
+            x: this.state.machinePosition.x - this.state.workPosition.x,
+            y: this.state.machinePosition.y - this.state.workPosition.y,
+            z: this.state.machinePosition.z - this.state.workPosition.z
+        };
+        let probedPoints = [];
+        let pointCount = 0;
+
+        log.info(`Work Coordinates: ${JSON.stringify(workCoordinates)}`);
+
+        let code = []
+        let xmin = this.state.bbox.xmin + this.state.margin;
+        let xmax = this.state.bbox.xmax - this.state.margin;
+        let ymin = this.state.bbox.ymin + this.state.margin;
+        let ymax = this.state.bbox.ymax - this.state.margin;
+
+        let dx = (xmax - xmin) / parseInt((xmax - xmin) / this.delta, 10);
+        let dy = (ymax - ymin) / parseInt((ymax - ymin) / this.delta, 10);
+        code.push('(AL: probing initial point)');
+        code.push('G21');
+        code.push('G90');
+        code.push(`G0 Z${this.state.height}`);
+        code.push(`G0 X${xmin.toFixed(3)} Y${ymin.toFixed(3)} Z${this.state.height}`);
+        code.push(`G38.2 Z-${this.state.height + 1} F${this.state.feed / 2}`);
+        code.push('G10 L20 P1 Z0'); // set the z zero
+        code.push(`G0 Z${this.state.height}`);
+        this.planedPointCount++;
+
+        let y = ymin - dy;
+
+        while (y < ymax - 0.01) {
+            y += dy;
+            if (y > ymax) {
+                y = ymax;
+            }
+
+            let x = xmin - dx;
+            if (y <= ymin + 0.01) {
+                // don't probe first point twice
+                x = xmin;
+            }
+
+            while (x < xmax - 0.01) {
+                x += dx;
+                if (x > xmax) {
+                    x = xmax;
+                }
+                code.push(`(AL: probing point ${planedPointCount + 1})`);
+                code.push(`G90 G0 X${x.toFixed(3)} Y${y.toFixed(3)} Z${this.state.height}`);
+                code.push(`G38.2 Z-${this.state.height + 1} F${this.state.feed}`);
+                code.push(`G0 Z${this.state.height}`);
+                planedPointCount++;
+            }
+        }
+
+        log.info(`Sending GCode:\n${code.join('\n')}\n`);
     }
 }
 
