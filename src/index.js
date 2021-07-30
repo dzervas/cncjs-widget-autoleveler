@@ -1,168 +1,95 @@
-const program = require('commander');
-const pkg = require('../package.json');
-const fs = require('fs');
-const path = require('path');
-const io = require('socket.io-client');
-const jwt = require('jsonwebtoken');
-const Autolevel = require('./autolevel.js');
+import qs from 'qs';
+import semver from 'semver';
+import ResizeObserver from './lib/ResizeObserver';
+import controller from './lib/controller';
+import log from './lib/log';
 
-program
-    .version(pkg.version)
-    .usage('-s <secret> -p <port> -id <id> -name <username> [options]')
-    .option('-i, --id <id>', 'the id stored in the ~/.cncrc file')
-    .option('-n, --name <name>', 'the user name stored in the ~/.cncrc file')
-    .option('-s, --secret <secret>', 'the secret key stored in the ~/.cncrc file')
-    .option('-p, --port <port>', 'path or name of serial port', '/dev/ttyACM0')
-    .option('-b, --baudrate <baudrate>', 'baud rate', '115200')
-    .option('-c, --config <filepath>', 'set the config file', '')
-    .option('--socket-address <address>', 'socket address or hostname', 'localhost')
-    .option('--socket-port <port>', 'socket port', '8000')
-    .option('--controller-type <type>', 'controller type: Grbl|Smoothie|TinyG', 'Grbl')
-    .option('--access-token-lifetime <lifetime>', 'access token lifetime in seconds or a time span string', '30d');
+// Query Parameters
+// * token (required): An authentication token to enable secure communication.
+// * host (optional): Specifies the host to connect to. Defaults to an empty string.
+// * widget (optional): Specifies a folder name under 'src/widgets'. Defaults to 'ReactApp'.
+const params = qs.parse(window.location.search.slice(1));
 
-program.parse(process.argv);
+window.addEventListener('message', (event) => {
+    const { token, version, action } = { ...event.data };
 
-let options = {
-    id: program.id,
-    name: program.name,
-    secret: program.secret,
-    port: program.port,
-    baudrate: program.baudrate,
-    config: program.config,
-    socketAddress: program.socketAddress,
-    socketPort: program.socketPort,
-    controllerType: program.controllerType,
-    accessTokenLifetime: program.accessTokenLifetime
-};
+    // Token authentication
+    if (token !== params.token) {
+        if (process.env.NODE_ENV === 'production') {
+            log.warn(`Received a message with an unauthorized token (${token}).`);
+        }
+        return;
+    }
 
-let defaults = {
-    secret: process.env.CNCJS_SECRET,
-    port: '/dev/ttyACM0',
-    baudrate: 115200,
-    socketAddress: 'localhost',
-    socketPort: 8000,
-    controllerType: 'Grbl',
-    accessTokenLifetime: '30d'
-};
+    if (version && semver.satisfies(version, '<1.9.10 || >=2.0.0')) {
+        const el = document.getElementById('viewport');
+        el.innerHTML = `
+            <div style="padding: 10px">
+                This widget is not compatible with CNCjs ${version}
+            </div>
+        `.trim();
+        return;
+    }
 
-// Get secret key from the config file and generate an access token
-const getUserHome = function () {
-    return process.env[(process.platform === 'win32') ? 'USERPROFILE' : 'HOME'];
-};
+    const { type, payload } = { ...action };
+    if (type === 'change') {
+        // Do not close the port if the port parameter is empty
+        const { port } = { ...payload };
+        port && controller.openPort(port);
+    }
+});
 
-const cncrc = (program.config) ? program.config : path.resolve(getUserHome(), '.cncrc');
-let config;
+// Dynamic imports
+const widget = params.widget || 'Autoleveler';
+import(`./widgets/${widget}`)
+    .then(m => {
+        const { default: render } = m;
 
-const generateAccessToken = function (payload, secret, expiration) {
-    const token = jwt.sign(payload, secret, {
-        expiresIn: expiration
+        if (typeof render !== 'function') {
+            log.error(`Expected a function but got ${render}. Check the default export in "widgets/${widget}".`);
+            return undefined;
+        }
+
+        return render();
+    })
+    .then(() => {
+        if (!params.token) {
+            return;
+        }
+
+        // Connect to a socket.io server
+        const host = params.host || 'http://127.0.0.1:8000'; // e.g. http://localhost:8000
+        const options = {
+            query: 'token=' + params.token
+        };
+        controller.connect(host, options, () => {
+            // Use the postMessage API for inter-frame communication
+            window.parent.postMessage({
+                token: params.token,
+                action: {
+                    type: 'connect'
+                }
+            }, '*');
+        });
+
+        new ResizeObserver(() => {
+            // Use the postMessage API for inter-frame communication
+            window.parent.postMessage({
+                token: params.token,
+                action: {
+                    type: 'resize',
+                    payload: {
+                        clientHeight: document.body.clientHeight,
+                        clientWidth: document.body.clientWidth,
+                        offsetHeight: document.body.offsetHeight,
+                        offsetWidth: document.body.offsetWidth,
+                        scrollHeight: document.body.scrollHeight,
+                        scrollWidth: document.body.scrollWidth
+                    }
+                }
+            }, '*');
+        }).observe(document.body);
+    })
+    .catch(err => {
+        log.error(err);
     });
-
-    return token;
-};
-
-Object.keys(options).forEach((key) => {
-    if (!options[key]) {
-        options[key] = defaults[key];
-    }
-});
-
-if (program.config) {
-    config = JSON.parse(fs.readFileSync(cncrc, 'utf8'));
-    if (!program.port) {
-        if (Object.prototype.hasOwnProperty.call(config, 'ports') && config.ports[0] && config.ports[0].comName) {
-            options.port = config.ports[0].comName;
-        }
-    }
-
-    if (!program.baudrate) {
-        if (Object.prototype.hasOwnProperty.call(config, 'baudrates') && config.baudrates[0]) {
-            options.baudrate = config.baudrates[0];
-        }
-    }
-
-    if (!program.controllerType) {
-        if (Object.prototype.hasOwnProperty.call(config, 'controller')) {
-            options.controllerType = config.controller;
-        }
-    }
-}
-
-if (!options.secret) {
-    try {
-        if (!config) {
-            config = JSON.parse(fs.readFileSync(cncrc, 'utf8'));
-        }
-        options.secret = config.secret;
-    } catch (err) {
-        console.error(err);
-        process.exit(1);
-    }
-}
-
-if (!options.id && !options.name) {
-    try {
-        if (!config) {
-            config = JSON.parse(fs.readFileSync(cncrc, 'utf8'));
-        }
-        options.id = config.users[0].id;
-        options.name = config.users[0].name;
-    } catch (err) {
-        console.error(err);
-        process.exit(1);
-    }
-}
-
-const token = generateAccessToken({ id: options.id, name: options.name }, options.secret, options.accessTokenLifetime);
-const url = 'ws://' + options.socketAddress + ':' + options.socketPort + '?token=' + token;
-
-let socket = io.connect('ws://' + options.socketAddress + ':' + options.socketPort, {
-    'query': 'token=' + token
-});
-
-socket.on('connect', () => {
-    console.log('Connected to ' + url);
-    // Open port
-    socket.emit('open', options.port, {
-        baudrate: Number(options.baudrate),
-        controllerType: options.controllerType
-    });
-});
-
-socket.on('error', (err) => {
-    console.error('Connection error.', err);
-    if (socket) {
-        socket.destroy();
-        socket = null;
-    }
-});
-
-socket.on('close', () => {
-    console.log('Connection closed.');
-});
-
-socket.on('serialport:open', (options) => {
-    options = options || {};
-
-    console.log(`Connected to port "${options.port}" (Baud rate: ${options.baudrate})`);
-
-    callback(null, socket);
-});
-
-socket.on('serialport:error', (options) => {
-    callback(new Error(`Error opening serial port "${options.port}"`));
-});
-
-// eslint-disable-next-line handle-callback-err
-function callback(err, socket) {
-    let autolevel = new Autolevel(socket, options);
-    socket.on('serialport:write', (data, context) => {
-        if (data.indexOf('#autolevel_reapply') >= 0 && context && context.source === 'feeder') {
-            autolevel.reapply(data, context);
-        } else if (data.indexOf('#autolevel') >= 0 && context && context.source === 'feeder') {
-            autolevel.start(data, context);
-        } else {
-            autolevel.updateContext(context);
-        }
-    });
-}
