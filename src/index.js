@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 const program = require('commander');
 const pkg = require('../package.json');
 const fs = require('fs');
@@ -53,7 +51,7 @@ const getUserHome = function () {
 };
 
 const cncrc = (program.config) ? program.config : path.resolve(getUserHome(), '.cncrc');
-var config;
+let config;
 
 const generateAccessToken = function (payload, secret, expiration) {
     const token = jwt.sign(payload, secret, {
