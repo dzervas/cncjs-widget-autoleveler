@@ -1,3 +1,12 @@
-node_modules/
-.vscode/
+node_modules
+npm-debug.log
+package-lock.json
+/.nyc_output
+/coverage
+/dist
+/output
+/releases
+/lib
+
 pm2.config.js
+.vscode/
