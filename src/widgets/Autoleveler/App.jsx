@@ -1,5 +1,4 @@
 import cx from 'classnames';
-import pubsub from 'pubsub-js';
 import PropTypes from 'prop-types';
 import React, { PureComponent } from 'react';
 import {
@@ -39,6 +38,56 @@ class App extends PureComponent {
     }
 
     controllerEvent = {
+        'gcode:load': (name, gcode) => {
+            // Tiny gcode parser to calculate bounding box.
+            // If this ext gets integrated to cncjs use `gcode:bbox` pubsub event
+
+            let xmin = null;
+            let xmax = null;
+            let ymin = null;
+            let ymax = null;
+
+            gcode.split('\n').forEach(line => {
+                if (line[0] !== 'G') {
+                    return;
+                }
+
+                let cmd = parseInt(line.substr(1, 2), 10);
+                if (cmd !== 0 && cmd !== 1 && cmd !== 2 && cmd !== 3 && cmd !== 38) {
+                    return;
+                }
+
+                let parser = /(?:\s?([XY]-?[0-9.]+)+)/g;
+
+                for (const match_groups of [...line.matchAll(parser)]) {
+                    const match = match_groups[1];
+                    let num = parseFloat(match.substr(1));
+                    if (match[0] === 'X') {
+                        if (num > xmax || xmax === null) {
+                            xmax = num;
+                        }
+                        if (num < xmin || xmin === null) {
+                            xmin = num;
+                        }
+                    } else if (match[0] === 'Y') {
+                        if (num > ymax || ymax === null) {
+                            ymax = num;
+                        }
+                        if (num < ymin || ymin === null) {
+                            ymin = num;
+                        }
+                    }
+                }
+            });
+
+            log.info(`New BBox: xmin: ${xmin} xmax: ${xmax} ymin: ${ymin} ymax: ${ymax}`);
+            this.setState({
+                bbox: {
+                    min: { x: xmin, y: ymin },
+                    max: { x: xmax, y: ymax }
+                }
+            });
+        },
         'gcode:unload': () => {
             this.setState({ gcodeLoaded: false });
         },
@@ -103,47 +152,12 @@ class App extends PureComponent {
         }
     };
 
-    pubsubEvent = {
-        'gcode:bbox': (msg, bbox) => {
-            console.error(msg, bbox);
-
-            // Got from https://github.com/cncjs/cncjs/blob/master/src/app/widgets/GCode/index.jsx
-            const dX = bbox.max.x - bbox.min.x;
-            const dY = bbox.max.y - bbox.min.y;
-            const dZ = bbox.max.z - bbox.min.z;
-
-            this.setState({
-                bbox: {
-                    min: {
-                        x: bbox.min.x,
-                        y: bbox.min.y,
-                        z: bbox.min.z
-                    },
-                    max: {
-                        x: bbox.max.x,
-                        y: bbox.max.y,
-                        z: bbox.max.z
-                    },
-                    delta: {
-                        x: dX,
-                        y: dY,
-                        z: dZ
-                    }
-                }
-            });
-        }
-    };
-
-    pubsubTokens = [];
-
     componentDidMount() {
-        this.subscribe();
         this.addControllerEvents();
     }
 
     componentWillUnmount() {
         this.removeControllerEvents();
-        this.unsubscribe();
     }
 
     addControllerEvents() {
@@ -158,21 +172,6 @@ class App extends PureComponent {
             const callback = this.controllerEvent[eventName];
             controller.removeListener(eventName, callback);
         });
-    }
-
-    subscribe() {
-        Object.keys(this.pubsubEvent).forEach(eventName => {
-            const callback = this.pubsubEvent[eventName];
-            const token = pubsub.subscribe(eventName, callback);
-            this.pubsubTokens.push(token);
-        });
-    }
-
-    unsubscribe() {
-        this.pubsubTokens.forEach((token) => {
-            pubsub.unsubscribe(token);
-        });
-        this.pubsubTokens = [];
     }
 
     getInitialState() {
@@ -201,17 +200,10 @@ class App extends PureComponent {
                 min: {
                     x: 0,
                     y: 0,
-                    z: 0
                 },
                 max: {
                     x: 0,
                     y: 0,
-                    z: 0
-                },
-                delta: {
-                    x: 0,
-                    y: 0,
-                    z: 0
                 }
             },
             isAutolevelRunning: false,
@@ -305,19 +297,20 @@ class App extends PureComponent {
             y: this.state.machinePosition.y - this.state.workPosition.y,
             z: this.state.machinePosition.z - this.state.workPosition.z
         };
-        // let probedPoints = [];
-        // let pointCount = 0;
 
         log.info(`Work Coordinates: ${JSON.stringify(workCoordinates)}`);
 
         let code = [];
-        let xmin = this.state.bbox.xmin + this.state.margin;
-        let xmax = this.state.bbox.xmax - this.state.margin;
-        let ymin = this.state.bbox.ymin + this.state.margin;
-        let ymax = this.state.bbox.ymax - this.state.margin;
+        let xmin = this.state.bbox.min.x - this.state.margin;
+        let xmax = this.state.bbox.max.x + this.state.margin;
+        let ymin = this.state.bbox.min.y - this.state.margin;
+        let ymax = this.state.bbox.max.y + this.state.margin;
 
-        let dx = (xmax - xmin) / parseInt((xmax - xmin) / this.delta, 10);
-        let dy = (ymax - ymin) / parseInt((ymax - ymin) / this.delta, 10);
+        let dx = (xmax - xmin) / parseInt((xmax - xmin) / this.state.delta, 10);
+        let dy = (ymax - ymin) / parseInt((ymax - ymin) / this.state.delta, 10);
+        // TODO: Use the controller to send motion/whatever commands
+        // like the Probe widget:
+        // https://github.com/cncjs/cncjs/blob/6f2ec1574eace3c99b4a18c3de199b222524d0e1/src/app/widgets/Probe/index.jsx#L132
         code.push('(AL: probing initial point)');
         code.push('G21');
         code.push('G90');
@@ -326,7 +319,6 @@ class App extends PureComponent {
         code.push(`G38.2 Z-${this.state.zSafe + 1} F${this.state.feedrate / 2}`);
         code.push('G10 L20 P1 Z0'); // set the z zero
         code.push(`G0 Z${this.state.zSafe}`);
-        // this.planedPointCount++;
 
         let y = ymin - dy;
 
@@ -347,11 +339,9 @@ class App extends PureComponent {
                 if (x > xmax) {
                     x = xmax;
                 }
-                // code.push(`(AL: probing point ${planedPointCount + 1})`);
                 code.push(`G90 G0 X${x.toFixed(3)} Y${y.toFixed(3)} Z${this.state.zSafe}`);
                 code.push(`G38.2 Z-${this.state.zSafe + 1} F${this.state.feedrate}`);
                 code.push(`G0 Z${this.state.zSafe}`);
-                // planedPointCount++;
             }
         }
 
