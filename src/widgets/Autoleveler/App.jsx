@@ -87,6 +87,7 @@ class App extends PureComponent {
                     max: { x: xmax, y: ymax }
                 }
             });
+            this.setState({ gcodeLoaded: true });
         },
         'gcode:unload': () => {
             this.setState({ gcodeLoaded: false });
@@ -149,6 +150,54 @@ class App extends PureComponent {
                     settings: controllerSettings
                 }
             }));
+        },
+        'serialport:read': (data) => {
+            if (data.indexOf('PRB') < 0) {
+                return;
+            }
+
+            let prbm = /\[PRB:([\+\-\.\d]+),([\+\-\.\d]+),([\+\-\.\d]+),?([\+\-\.\d]+)?:(\d)\]/g.exec(data);
+            if (!prbm) {
+                return;
+            }
+
+            let prb = [
+                parseFloat(prbm[1]),
+                parseFloat(prbm[2]),
+                parseFloat(prbm[3])
+            ];
+            let pt = {
+                x: prb[0] - this.wco.x,
+                y: prb[1] - this.wco.y,
+                z: prb[2] - this.wco.z
+            };
+
+            if (this.state.plannedPointCount <= 0) {
+                return;
+            }
+
+            if (this.state.probedPoints.length === 0) {
+                this.min_dz = pt.z;
+                this.max_dz = pt.z;
+                this.sum_dz = pt.z;
+            } else {
+                if (pt.z < this.min_dz) {
+                    this.min_dz = pt.z;
+                }
+                if (pt.z > this.max_dz) {
+                    this.max_dz = pt.z;
+                }
+                this.sum_dz += pt.z;
+            }
+
+            this.state.probedPoints.push(pt);
+            log.info(`Probed ${this.state.probedPoints.length}/${this.state.plannedPointCount}> ${pt.x.toFixed(3)} ${pt.y.toFixed(3)} ${pt.z.toFixed(3)}`);
+            // send info to console
+            if (this.state.probedPoints.length >= this.state.plannedPointCount) {
+                // this.sckw.sendGcode(`(AL: dz_min=${this.min_dz.toFixed(3)}, dz_max=${this.max_dz.toFixed(3)}, dz_avg=${(this.sum_dz / this.probedPoints.length).toFixed(3)})`);
+                // this.applyCompensation();
+                this.setState({ plannedPointCount: 0 });
+            }
         }
     };
 
@@ -211,7 +260,10 @@ class App extends PureComponent {
             zSafe: 3.0,
             feedrate: 25,
             margin: 2.5,
-            gcodeLoaded: false
+            gcodeLoaded: false,
+
+            plannedPointCount: 0,
+            probedPoints: [],
         };
     }
 
@@ -292,13 +344,12 @@ class App extends PureComponent {
         log.info('Starting autoleveling');
         this.setState({ isAutolevelRunning: true });
 
-        let workCoordinates = {
-            x: this.state.machinePosition.x - this.state.workPosition.x,
-            y: this.state.machinePosition.y - this.state.workPosition.y,
-            z: this.state.machinePosition.z - this.state.workPosition.z
-        };
-
-        log.info(`Work Coordinates: ${JSON.stringify(workCoordinates)}`);
+        // let workCoordinates = {
+        //     x: this.state.machinePosition.x - this.state.workPosition.x,
+        //     y: this.state.machinePosition.y - this.state.workPosition.y,
+        //     z: this.state.machinePosition.z - this.state.workPosition.z
+        // };
+        let plannedPointCount = 0;
 
         let code = [];
         let xmin = this.state.bbox.min.x - this.state.margin;
@@ -319,6 +370,7 @@ class App extends PureComponent {
         code.push(`G38.2 Z-${this.state.zSafe + 1} F${this.state.feedrate / 2}`);
         code.push('G10 L20 P1 Z0'); // set the z zero
         code.push(`G0 Z${this.state.zSafe}`);
+        plannedPointCount++;
 
         let y = ymin - dy;
 
@@ -342,12 +394,13 @@ class App extends PureComponent {
                 code.push(`G90 G0 X${x.toFixed(3)} Y${y.toFixed(3)} Z${this.state.zSafe}`);
                 code.push(`G38.2 Z-${this.state.zSafe + 1} F${this.state.feedrate}`);
                 code.push(`G0 Z${this.state.zSafe}`);
+                plannedPointCount++;
             }
         }
 
         log.info(`Sending GCode:\n${code.join('\n')}\n`);
 
-        this.setState({ isAutolevelRunning: false });
+        this.setState({ plannedPointCount, isAutolevelRunning: false, probedPoints: [] });
     }
 }
 
