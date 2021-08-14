@@ -41,6 +41,7 @@ class App extends PureComponent {
         'gcode:load': (name, gcode) => {
             // Tiny gcode parser to calculate bounding box.
             // If this ext gets integrated to cncjs use `gcode:bbox` pubsub event
+            // TODO: Ask if mesh should be deleted
 
             let xmin = null;
             let xmax = null;
@@ -323,7 +324,7 @@ class App extends PureComponent {
         );
     }
 
-    eventProber(data) {
+    eventAutolevelingProber(data) {
         // TODO: Return a promise? or at the "start level" thing?
 
         if (this.state.isAutolevelRunning && this.state.plannedPointCount <= this.state.probedPoints.length) {
@@ -335,6 +336,7 @@ class App extends PureComponent {
             return;
         }
 
+        // TODO: Add support for the rest of the controllers
         let prbm = /\[PRB:([\+\-\.\d]+),([\+\-\.\d]+),([\+\-\.\d]+),?([\+\-\.\d]+)?:(\d)\]/g.exec(data);
         if (!prbm) {
             return;
@@ -373,7 +375,7 @@ class App extends PureComponent {
 
         this.state.probedPoints.push(pt);
         log.info(`Probed ${this.state.probedPoints.length}/${this.state.plannedPointCount}> ${pt.x.toFixed(3)} ${pt.y.toFixed(3)} ${pt.z.toFixed(3)}`);
-        controller.removeListener('serialport:read', this.eventProber);
+        controller.removeListener('serialport:read', this.eventAutolevelingProber);
         // send info to console
         if (this.state.probedPoints.length >= this.state.plannedPointCount) {
             this.applyCompensation();
@@ -381,6 +383,33 @@ class App extends PureComponent {
         }
     }
 
+    probeAlignmentHole(index) {
+        let code = [];
+        const x = this.state.alignmentHole[index].x;
+        const y = this.state.alignmentHole[index].y;
+
+        log.info(`Probing hole ${index}`);
+        code.push('G21');
+        code.push('G90');
+        code.push(`G0 X${x} Y${y}`);
+        code.push(`G38.2 Z-${this.state.zSafe} F${this.state.feedrate / 2}`);
+        code.push(`G0 X${x} Y${y}`);
+        code.push('G10 L20 P1 Z0');
+        code.push('G0 Z1');
+
+        // TODO: Throw a box with the G-code in it for confirmation like probe
+        controller.command('gcode', code.join('\n'));
+    }
+
+    makeAlignmentHole(index) {
+        let code = [];
+        code.push(`G1 Z-1.6 F${this.state.feedrate}`);
+
+        // TODO: Throw a box with the G-code in it for confirmation like probe
+        controller.command('gcode', code.join('\n'));
+    }
+
+    // TODO: Add function to clear current probes
     startAutolevel() {
         // Code got from https://github.com/kreso-t/cncjs-kt-ext
         log.info('Starting autoleveling');
@@ -404,7 +433,6 @@ class App extends PureComponent {
         // TODO: Use the `controller` to send motion/whatever commands
         // like the Probe widget:
         // https://github.com/cncjs/cncjs/blob/6f2ec1574eace3c99b4a18c3de199b222524d0e1/src/app/widgets/Probe/index.jsx#L132
-        code.push('(AL: probing initial point)');
         code.push('G21');
         code.push('G90');
         code.push(`G0 Z${this.state.zSafe}`);
@@ -443,8 +471,9 @@ class App extends PureComponent {
         this.setState({ plannedPointCount, probedPoints: [] });
 
         log.info(`Sending GCode:\n${code.join('\n')}\n`);
+        // TODO: Throw a box with the G-code in it for confirmation like probe
         controller.command('gcode', code.join('\n'));
-        controller.addListener('serialport:read', this.eventProber);
+        controller.addListener('serialport:read', this.eventAutolevelingProber);
     }
 
     applyCompensation(gcode) {
@@ -532,7 +561,7 @@ class App extends PureComponent {
             }
         });
 
-        const newGcodeFileName = alFileNamePrefix + this.gcodeFileName;
+        const newGcodeFileName = '#AL:' + this.gcodeFileName;
         controller.command('gcode:load', newGcodeFileName, result.join('\n'));
         return result.join('\n');
     }
