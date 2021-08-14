@@ -1,5 +1,5 @@
 /* eslint-disable no-useless-escape */
-const SocketWrap = require('./socketwrap');
+// const SocketWrap = require('./socketwrap');
 
 const alFileNamePrefix = '#AL:';
 
@@ -25,7 +25,7 @@ module.exports = class Autolevel {
     constructor(socket, options) {
         this.gcodeFileName = '';
         this.gcode = '';
-        this.sckw = new SocketWrap(socket, options.port);
+        // this.sckw = new SocketWrap(socket, options.port);
         this.delta = 10.0; // step
         this.feed = 50; // probing feedrate
         this.height = 2; // travelling height
