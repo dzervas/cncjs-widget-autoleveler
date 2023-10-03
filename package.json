@@ -37,7 +37,7 @@
     "qs": "~6.5.1",
     "react": "^0.14.0 || >=15.0.0",
     "react-dom": "^0.14.0 || >=15.0.0",
-    "semver": "~5.4.1",
+    "semver": "~5.7.2",
     "socket.io-client": "~1.7.4",
     "universal-logger": "~1.0.1",
     "universal-logger-browser": "~1.0.2"
